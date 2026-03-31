@@ -129,6 +129,10 @@ input {
   justify-content: center;
 }
 
+.msg-row.thinking {
+  justify-content: flex-start;
+}
+
 .bubble {
   max-width: min(70ch, 78%);
   border-radius: 12px;
@@ -153,6 +157,16 @@ input {
   box-shadow: none;
   font-size: 12px;
   padding: 6px 10px;
+}
+
+.msg-row.thinking .bubble {
+  background: #f5f8ff;
+  color: #4a5672;
+  border: 1px solid #d7e0f5;
+}
+
+.bubble.thinking-stream {
+  font-size: 13px;
 }
 
 .bubble.loading {

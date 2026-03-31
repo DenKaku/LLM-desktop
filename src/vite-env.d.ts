@@ -21,12 +21,20 @@ interface ChatRequest {
 
 interface ChatResponse {
   content: string;
+  thinking?: string;
+}
+
+interface ChatStreamChunk {
+  type: 'thinking' | 'content';
+  delta: string;
 }
 
 interface Window {
   api: {
     listModels: () => Promise<ModelInfo[]>;
     chat: (payload: ChatRequest) => Promise<ChatResponse>;
+    chatStream: (payload: ChatRequest) => Promise<ChatResponse>;
+    onChatChunk: (listener: (chunk: ChatStreamChunk) => void) => () => void;
     checkThinkingSupport: (model: string) => Promise<boolean>;
   };
 }

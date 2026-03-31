@@ -21,7 +21,7 @@ const THINKING_LABEL_MAP: Record<ThinkingMode, string> = {
 };
 
 interface ViewMessage {
-  role: Message['role'] | 'system';
+  role: Message['role'] | 'system' | 'thinking';
   content: string;
 }
 
@@ -31,6 +31,8 @@ export function App() {
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('off');
   const [messages, setMessages] = useState<ViewMessage[]>([]);
   const [chatHistory, setChatHistory] = useState<Message[]>([]);
+  const [streamThinking, setStreamThinking] = useState('');
+  const [streamContent, setStreamContent] = useState('');
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -38,6 +40,22 @@ export function App() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const lastModelRef = useRef('');
   const lastThinkingModeRef = useRef<ThinkingMode>('off');
+  const streamThinkingRef = useRef('');
+  const streamContentRef = useRef('');
+
+  useEffect(() => {
+    const unsubscribe = window.api.onChatChunk((chunk) => {
+      if (chunk.type === 'thinking') {
+        streamThinkingRef.current += chunk.delta;
+        setStreamThinking(streamThinkingRef.current);
+        return;
+      }
+      streamContentRef.current += chunk.delta;
+      setStreamContent(streamContentRef.current);
+    });
+
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     const loadModels = async () => {
@@ -106,18 +124,28 @@ export function App() {
 
     setMessages((prev) => [...prev, userMessage]);
     setChatHistory(nextChatHistory);
+    streamThinkingRef.current = '';
+    streamContentRef.current = '';
+    setStreamThinking('');
+    setStreamContent('');
     setInput('');
     setLoading(true);
     setError('');
 
     try {
-      const response = await window.api.chat({
+      const response = await window.api.chatStream({
         model: selectedModel,
         thinkingMode: supportsThinking ? thinkingMode : 'off',
         messages: nextChatHistory
       });
 
-      const assistantMessage: Message = { role: 'assistant', content: response.content };
+      const finalThinking = streamThinkingRef.current.trim() || response.thinking?.trim() || '';
+      if (finalThinking) {
+        setMessages((prev) => [...prev, { role: 'thinking', content: finalThinking }]);
+      }
+
+      const finalContent = streamContentRef.current.trim() || response.content;
+      const assistantMessage: Message = { role: 'assistant', content: finalContent };
       setMessages((prev) => [...prev, assistantMessage]);
       setChatHistory((prev) => [...prev, assistantMessage]);
     } catch (err) {
@@ -130,6 +158,10 @@ export function App() {
         inputEl.focus();
         inputEl.select();
       }, 0);
+      streamThinkingRef.current = '';
+      streamContentRef.current = '';
+      setStreamThinking('');
+      setStreamContent('');
     }
   };
 
@@ -184,9 +216,16 @@ export function App() {
             </div>
           ))}
           {loading && (
-            <div className="msg-row assistant">
-              <div className="bubble loading">{loadingText}</div>
-            </div>
+            <>
+              {supportsThinking && thinkingMode !== 'off' && (
+                <div className="msg-row thinking">
+                  <div className="bubble thinking-stream">{streamThinking || loadingText}</div>
+                </div>
+              )}
+              <div className="msg-row assistant">
+                <div className="bubble loading">{streamContent || '生成中...'}</div>
+              </div>
+            </>
           )}
         </section>
 

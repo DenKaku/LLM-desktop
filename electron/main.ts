@@ -23,6 +23,11 @@ interface ModelInfo {
   supportsThinking: boolean;
 }
 
+interface ChatStreamChunk {
+  type: 'thinking' | 'content';
+  delta: string;
+}
+
 const THINKING_MODEL_KEYWORDS = ['deepseek-r1', 'qwen3', 'qwq', 'reason', 'thinking'];
 
 function inferThinkingSupport(modelName: string): boolean {
@@ -64,6 +69,16 @@ async function listModels(): Promise<ModelInfo[]> {
 }
 
 async function chat(payload: ChatPayload): Promise<{ content: string }> {
+  const result = await streamChat(payload, () => {
+    // no-op for non-stream callers
+  });
+  return { content: result.content };
+}
+
+async function streamChat(
+  payload: ChatPayload,
+  onChunk: (chunk: ChatStreamChunk) => void
+): Promise<{ content: string; thinking: string }> {
   const supportsThinking = inferThinkingSupport(payload.model);
   const thinkingMode = supportsThinking ? payload.thinkingMode : 'off';
   const think = thinkingMode !== 'off';
@@ -71,11 +86,11 @@ async function chat(payload: ChatPayload): Promise<{ content: string }> {
   const body = {
     model: payload.model,
     messages: payload.messages,
-    stream: false,
+    stream: true,
     think
   };
 
-  const result = await ollamaFetch<{ message?: { content?: string } }>('/api/chat', {
+  const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -83,12 +98,86 @@ async function chat(payload: ChatPayload): Promise<{ content: string }> {
     body: JSON.stringify(body)
   });
 
-  const content = result.message?.content?.trim();
+  if (!response.ok) {
+    let errorMessage = `Ollama 请求失败（${response.status}）`;
+    try {
+      const data = (await response.json()) as { error?: string };
+      if (data.error) errorMessage = data.error;
+    } catch {
+      // Ignore parsing failures and keep default message.
+    }
+    throw new Error(errorMessage);
+  }
+
+  if (!response.body) {
+    throw new Error('模型未返回流式数据，请稍后重试。');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let thinking = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      const data = JSON.parse(line) as {
+        done?: boolean;
+        error?: string;
+        message?: { content?: string; thinking?: string };
+      };
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      const thinkingDelta = data.message?.thinking ?? '';
+      if (thinkingDelta) {
+        thinking += thinkingDelta;
+        onChunk({ type: 'thinking', delta: thinkingDelta });
+      }
+
+      const contentDelta = data.message?.content ?? '';
+      if (contentDelta) {
+        content += contentDelta;
+        onChunk({ type: 'content', delta: contentDelta });
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const data = JSON.parse(buffer) as {
+      error?: string;
+      message?: { content?: string; thinking?: string };
+    };
+    if (data.error) throw new Error(data.error);
+    const thinkingDelta = data.message?.thinking ?? '';
+    if (thinkingDelta) {
+      thinking += thinkingDelta;
+      onChunk({ type: 'thinking', delta: thinkingDelta });
+    }
+    const contentDelta = data.message?.content ?? '';
+    if (contentDelta) {
+      content += contentDelta;
+      onChunk({ type: 'content', delta: contentDelta });
+    }
+  }
+
+  content = content.trim();
   if (!content) {
     throw new Error('模型返回内容为空，请重试。');
   }
 
-  return { content };
+  return { content, thinking: thinking.trim() };
 }
 
 function createWindow(): void {
@@ -115,6 +204,11 @@ app.whenReady().then(() => {
   ipcMain.handle('ollama:list-models', async () => listModels());
   ipcMain.handle('ollama:check-thinking-support', async (_event, model: string) => inferThinkingSupport(model));
   ipcMain.handle('ollama:chat', async (_event, payload: ChatPayload) => chat(payload));
+  ipcMain.handle('ollama:chat-stream', async (event, payload: ChatPayload) =>
+    streamChat(payload, (chunk) => {
+      event.sender.send('ollama:chat-chunk', chunk);
+    })
+  );
 
   createWindow();
 
