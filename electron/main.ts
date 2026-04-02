@@ -1,32 +1,11 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
+import type { ChatRequest, ChatResponse, ChatStreamChunk } from '../types/chat';
+import type { ModelInfo } from '../types/model';
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
-
-type ThinkingMode = 'off' | 'low' | 'medium' | 'high';
-type Role = 'user' | 'assistant';
-
-interface ChatMessage {
-  role: Role;
-  content: string;
-}
-
-interface ChatPayload {
-  model: string;
-  thinkingMode: ThinkingMode;
-  messages: ChatMessage[];
-}
-
-interface ModelInfo {
-  name: string;
-  supportsThinking: boolean;
-}
-
-interface ChatStreamChunk {
-  type: 'thinking' | 'content';
-  delta: string;
-}
+const logMain = (...args: unknown[]) => console.log('[main]', ...args);
 
 const THINKING_MODEL_KEYWORDS = ['deepseek-r1', 'qwen3', 'qwq', 'reason', 'thinking'];
 
@@ -68,7 +47,7 @@ async function listModels(): Promise<ModelInfo[]> {
   }));
 }
 
-async function chat(payload: ChatPayload): Promise<{ content: string }> {
+async function chat(payload: ChatRequest): Promise<ChatResponse> {
   const result = await streamChat(payload, () => {
     // no-op for non-stream callers
   });
@@ -76,13 +55,14 @@ async function chat(payload: ChatPayload): Promise<{ content: string }> {
 }
 
 async function streamChat(
-  payload: ChatPayload,
+  payload: ChatRequest,
   onChunk: (chunk: ChatStreamChunk) => void
-): Promise<{ content: string; thinking: string }> {
+): Promise<ChatResponse> {
   const supportsThinking = inferThinkingSupport(payload.model);
   const thinkingMode = supportsThinking ? payload.thinkingMode : 'off';
   const think = thinkingMode !== 'off';
 
+  // logMain('chat request', { model: payload.model, thinkingMode });
   const body = {
     model: payload.model,
     messages: payload.messages,
@@ -133,6 +113,8 @@ async function streamChat(
       const data = JSON.parse(line) as {
         done?: boolean;
         error?: string;
+        thinking?: string;
+        content?: string;
         message?: { content?: string; thinking?: string };
       };
 
@@ -140,13 +122,13 @@ async function streamChat(
         throw new Error(data.error);
       }
 
-      const thinkingDelta = data.message?.thinking ?? '';
+      const thinkingDelta = data.message?.thinking ?? data.thinking ?? '';
       if (thinkingDelta) {
         thinking += thinkingDelta;
         onChunk({ type: 'thinking', delta: thinkingDelta });
       }
 
-      const contentDelta = data.message?.content ?? '';
+      const contentDelta = data.message?.content ?? data.content ?? '';
       if (contentDelta) {
         content += contentDelta;
         onChunk({ type: 'content', delta: contentDelta });
@@ -157,15 +139,17 @@ async function streamChat(
   if (buffer.trim()) {
     const data = JSON.parse(buffer) as {
       error?: string;
+      thinking?: string;
+      content?: string;
       message?: { content?: string; thinking?: string };
     };
     if (data.error) throw new Error(data.error);
-    const thinkingDelta = data.message?.thinking ?? '';
+    const thinkingDelta = data.message?.thinking ?? data.thinking ?? '';
     if (thinkingDelta) {
       thinking += thinkingDelta;
       onChunk({ type: 'thinking', delta: thinkingDelta });
     }
-    const contentDelta = data.message?.content ?? '';
+    const contentDelta = data.message?.content ?? data.content ?? '';
     if (contentDelta) {
       content += contentDelta;
       onChunk({ type: 'content', delta: contentDelta });
@@ -195,16 +179,18 @@ function createWindow(): void {
 
   if (isDev && process.env.VITE_DEV_SERVER_URL) {
     void win.loadURL(process.env.VITE_DEV_SERVER_URL);
+    win.webContents.openDevTools({ mode: 'detach' });
   } else {
-    void win.loadFile(path.join(__dirname, '../dist/index.html'));
+    void win.loadFile(path.join(app.getAppPath(), 'dist/index.html'));
   }
 }
 
 app.whenReady().then(() => {
+  logMain('app ready');
   ipcMain.handle('ollama:list-models', async () => listModels());
   ipcMain.handle('ollama:check-thinking-support', async (_event, model: string) => inferThinkingSupport(model));
-  ipcMain.handle('ollama:chat', async (_event, payload: ChatPayload) => chat(payload));
-  ipcMain.handle('ollama:chat-stream', async (event, payload: ChatPayload) =>
+  ipcMain.handle('ollama:chat', async (_event, payload: ChatRequest) => chat(payload));
+  ipcMain.handle('ollama:chat-stream', async (event, payload: ChatRequest) =>
     streamChat(payload, (chunk) => {
       event.sender.send('ollama:chat-chunk', chunk);
     })

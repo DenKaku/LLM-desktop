@@ -1,32 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { ChatRequest, ChatResponse, ChatStreamChunk } from '../types/chat';
+import type { ModelInfo } from '../types/model';
 
-type ThinkingMode = 'off' | 'low' | 'medium' | 'high';
-type Role = 'user' | 'assistant';
-
-interface ModelInfo {
-  name: string;
-  supportsThinking: boolean;
-}
-
-interface Message {
-  role: Role;
-  content: string;
-}
-
-interface ChatRequest {
-  model: string;
-  thinkingMode: ThinkingMode;
-  messages: Message[];
-}
-
-interface ChatResponse {
-  content: string;
-}
-
-interface ChatStreamChunk {
-  type: 'thinking' | 'content';
-  delta: string;
-}
+const logPreload = (...args: unknown[]) => console.log('[preload]', ...args);
+logPreload('bridge initialized');
 
 contextBridge.exposeInMainWorld('api', {
   listModels: (): Promise<ModelInfo[]> => ipcRenderer.invoke('ollama:list-models'),

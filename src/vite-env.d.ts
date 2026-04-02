@@ -1,40 +1,17 @@
 /// <reference types="vite/client" />
+import type { ChatRequest, ChatResponse, ChatStreamChunk } from '../types/chat';
+import type { ModelInfo } from '../types/model';
 
-type ThinkingMode = 'off' | 'low' | 'medium' | 'high';
-type Role = 'user' | 'assistant';
-
-interface ModelInfo {
-  name: string;
-  supportsThinking: boolean;
+declare global {
+  interface Window {
+    api: {
+      listModels: () => Promise<ModelInfo[]>;
+      chat: (payload: ChatRequest) => Promise<ChatResponse>;
+      chatStream: (payload: ChatRequest) => Promise<ChatResponse>;
+      onChatChunk: (listener: (chunk: ChatStreamChunk) => void) => () => void;
+      checkThinkingSupport: (model: string) => Promise<boolean>;
+    };
+  }
 }
 
-interface Message {
-  role: Role;
-  content: string;
-}
-
-interface ChatRequest {
-  model: string;
-  thinkingMode: ThinkingMode;
-  messages: Message[];
-}
-
-interface ChatResponse {
-  content: string;
-  thinking?: string;
-}
-
-interface ChatStreamChunk {
-  type: 'thinking' | 'content';
-  delta: string;
-}
-
-interface Window {
-  api: {
-    listModels: () => Promise<ModelInfo[]>;
-    chat: (payload: ChatRequest) => Promise<ChatResponse>;
-    chatStream: (payload: ChatRequest) => Promise<ChatResponse>;
-    onChatChunk: (listener: (chunk: ChatStreamChunk) => void) => () => void;
-    checkThinkingSupport: (model: string) => Promise<boolean>;
-  };
-}
+export {};

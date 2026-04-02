@@ -1,4 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import type { Message, ThinkingMode } from '../types/chat';
+import type { ModelInfo } from '../types/model';
+import type { ThemeMode } from '../types/ui';
 
 const THINKING_OPTIONS: Array<{ label: string; value: ThinkingMode }> = [
   { label: '关闭', value: 'off' },
@@ -25,6 +28,20 @@ interface ViewMessage {
   content: string;
 }
 
+const THEME_OPTIONS: Array<{ label: string; value: ThemeMode }> = [
+  { label: '系统', value: 'system' },
+  { label: '浅色', value: 'light' },
+  { label: '深色', value: 'dark' }
+];
+
+const THEME_STORAGE_KEY = 'llm-chat-theme-mode';
+const logRenderer = (...args: unknown[]) => console.log('[renderer]', ...args);
+
+function resolveTheme(mode: ThemeMode): 'light' | 'dark' {
+  if (mode === 'light' || mode === 'dark') return mode;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
 export function App() {
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -34,14 +51,43 @@ export function App() {
   const [streamThinking, setStreamThinking] = useState('');
   const [streamContent, setStreamContent] = useState('');
   const [input, setInput] = useState('');
+  const [themeMode, setThemeMode] = useState<ThemeMode>('system');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const messagesRef = useRef<HTMLElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const modelsRef = useRef<ModelInfo[]>([]);
   const lastModelRef = useRef('');
+  const selectedModelRef = useRef('');
   const lastThinkingModeRef = useRef<ThinkingMode>('off');
+  const thinkingModeRef = useRef<ThinkingMode>('off');
   const streamThinkingRef = useRef('');
   const streamContentRef = useRef('');
+
+  useEffect(() => {
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
+      setThemeMode(savedTheme);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+    const root = document.documentElement;
+    root.setAttribute('data-theme', resolveTheme(themeMode));
+
+    if (themeMode !== 'system') {
+      return;
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleThemeChange = () => {
+      root.setAttribute('data-theme', mediaQuery.matches ? 'dark' : 'light');
+    };
+
+    mediaQuery.addEventListener('change', handleThemeChange);
+    return () => mediaQuery.removeEventListener('change', handleThemeChange);
+  }, [themeMode]);
 
   useEffect(() => {
     const unsubscribe = window.api.onChatChunk((chunk) => {
@@ -63,9 +109,11 @@ export function App() {
         setError('');
         const list = await window.api.listModels();
         setModels(list);
+        modelsRef.current = list;
         if (list.length > 0) {
           setSelectedModel(list[0].name);
           lastModelRef.current = list[0].name;
+          selectedModelRef.current = list[0].name;
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : '模型列表加载失败');
@@ -85,12 +133,30 @@ export function App() {
   }, [supportsThinking]);
 
   useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+
+  useEffect(() => {
+    modelsRef.current = models;
+  }, [models]);
+
+  useEffect(() => {
     if (!selectedModel) return;
     if (selectedModel === lastModelRef.current) return;
 
-    setMessages((prev) => [...prev, { role: 'system', content: `已切换模型：${selectedModel}` }]);
+    setChatHistory([]);
+    setMessages([{ role: 'system', content: `已切换模型：${selectedModel}，上下文已清除` }]);
+    setError('');
+    streamThinkingRef.current = '';
+    streamContentRef.current = '';
+    setStreamThinking('');
+    setStreamContent('');
     lastModelRef.current = selectedModel;
   }, [selectedModel]);
+
+  useEffect(() => {
+    thinkingModeRef.current = thinkingMode;
+  }, [thinkingMode]);
 
   useEffect(() => {
     if (thinkingMode === lastThinkingModeRef.current) return;
@@ -117,12 +183,16 @@ export function App() {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     const text = input.trim();
-    if (!text || !selectedModel || loading) return;
+    const activeModel = selectedModelRef.current;
+    if (!text || !activeModel || loading) return;
+    const activeModelInfo = modelsRef.current.find((m) => m.name === activeModel);
+    const activeSupportsThinking = activeModelInfo?.supportsThinking ?? false;
+    const activeThinkingMode: ThinkingMode = activeSupportsThinking ? thinkingModeRef.current : 'off';
 
     const userMessage: Message = { role: 'user', content: text };
     const nextChatHistory = [...chatHistory, userMessage];
 
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => [...prev, { role: 'user', content: text }]);
     setChatHistory(nextChatHistory);
     streamThinkingRef.current = '';
     streamContentRef.current = '';
@@ -134,8 +204,8 @@ export function App() {
 
     try {
       const response = await window.api.chatStream({
-        model: selectedModel,
-        thinkingMode: supportsThinking ? thinkingMode : 'off',
+        model: activeModel,
+        thinkingMode: activeThinkingMode,
         messages: nextChatHistory
       });
 
@@ -176,7 +246,15 @@ export function App() {
         <header className="toolbar">
           <label>
             模型
-            <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
+            <select
+              value={selectedModel}
+              onChange={(e) => {
+                const nextModel = e.target.value;
+                selectedModelRef.current = nextModel;
+                setSelectedModel(nextModel);
+              }}
+              disabled={loading}
+            >
               {models.map((model) => (
                 <option key={model.name} value={model.name}>
                   {model.name}
@@ -190,9 +268,20 @@ export function App() {
             <select
               value={thinkingMode}
               onChange={(e) => setThinkingMode(e.target.value as ThinkingMode)}
-              disabled={!supportsThinking}
+              disabled={!supportsThinking || loading}
             >
               {THINKING_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label>
+            外观
+            <select value={themeMode} onChange={(e) => setThemeMode(e.target.value as ThemeMode)} disabled={loading}>
+              {THEME_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -219,7 +308,10 @@ export function App() {
             <>
               {supportsThinking && thinkingMode !== 'off' && (
                 <div className="msg-row thinking">
-                  <div className="bubble thinking-stream">{streamThinking || loadingText}</div>
+                  <div className="bubble thinking-stream">
+                    <div className="thinking-badge">思考中</div>
+                    <div className="thinking-text">{streamThinking || loadingText}</div>
+                  </div>
                 </div>
               )}
               <div className="msg-row assistant">
